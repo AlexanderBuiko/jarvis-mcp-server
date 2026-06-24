@@ -1,0 +1,13 @@
+# Keep the build context tiny and free of secrets/cruft.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.git/
+.gitignore
+.env
+.DS_Store
+tests/
+README.md
+DEPLOY.md

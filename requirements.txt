@@ -1,0 +1,8 @@
+# Official MCP SDK (server + Streamable HTTP transport).
+mcp>=1.8
+# ASGI server + framework. Pulled in by mcp's HTTP transport, but pinned
+# explicitly because we build/serve the app ourselves (auth middleware + uvicorn).
+uvicorn>=0.30
+starlette>=0.37
+# CA bundle so HTTPS to the public APIs works on macOS python.org builds.
+certifi>=2024.2.2
