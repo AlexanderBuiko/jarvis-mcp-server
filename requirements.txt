@@ -1,8 +1,11 @@
+# Pinned to exact versions for reproducible Cloud Run builds — the image installs
+# the same packages tested locally (no surprise SDK upgrades on a future redeploy).
+
 # Official MCP SDK (server + Streamable HTTP transport).
-mcp>=1.8
-# ASGI server + framework. Pulled in by mcp's HTTP transport, but pinned
-# explicitly because we build/serve the app ourselves (auth middleware + uvicorn).
-uvicorn>=0.30
-starlette>=0.37
+mcp==1.28.0
+# ASGI server + framework. We build/serve the app ourselves (auth middleware +
+# uvicorn), so these are pinned explicitly, not left to mcp's transitive deps.
+uvicorn==0.49.0
+starlette==1.3.1
 # CA bundle so HTTPS to the public APIs works on macOS python.org builds.
-certifi>=2024.2.2
+certifi==2026.6.17

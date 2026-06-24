@@ -41,11 +41,18 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --set-env-vars TRANSPORT=streamable-http,LOG_LEVEL=INFO \
   --set-secrets MCP_API_KEY=mcp-api-key:latest \
-  --min-instances 1 \
-  --max-instances 5 \
+  --min-instances 0 \
+  --max-instances 2 \
   --timeout 3600 \
   --cpu 1 --memory 256Mi
 ```
+
+> **Staying in the free tier (personal use).** `--min-instances 0` is the key flag:
+> the service scales to **zero** when idle, so you pay nothing between uses and stay
+> within Cloud Run's Always Free allowance (2M requests/month). The cost is a ~1–3s
+> cold start on the first call after a quiet period — fine for a personal tool. Only
+> raise `--min-instances` to 1 if you need to eliminate that delay, and note that a
+> permanently-warm instance **does** bill (it's the one setting here that costs money).
 
 What the flags do, and why:
 
@@ -53,9 +60,9 @@ What the flags do, and why:
 |---|---|
 | `--allow-unauthenticated` | Lets requests *reach* the container. This is **not** "no auth" — our `X-API-Key` middleware still guards every request. It just means we use **app-level** auth (the CLI sends an API key) instead of **Cloud Run IAM** auth (which would need GCP identity tokens the CLI doesn't have). |
 | `--set-secrets MCP_API_KEY=…` | Injects the key from Secret Manager as an env var at runtime. It never appears in the image, the build logs, or `gcloud` history. |
-| `--min-instances 1` | Keeps one instance warm so a Streamable-HTTP/SSE stream isn't dropped by a cold start. Set to `0` to scale to zero (cheaper, but first request pays a cold start). |
+| `--min-instances 0` | **Scale to zero when idle → $0 between uses** (stays in the free tier). First call after idle pays a short cold start. This is the right setting for personal use. |
 | `--timeout 3600` | Streamable HTTP / SSE hold a long-lived request open; the default 300s would cut streams. |
-| `--max-instances 5` | Caps cost/blast radius. |
+| `--max-instances 2` | Caps cost/blast radius — a single user never needs more. |
 
 ## 3. Verify the deployment
 
