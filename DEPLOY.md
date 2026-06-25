@@ -85,14 +85,14 @@ Read the deployed key once, then put both values in `~/.jarvis/.env`:
 ```bash
 KEY=$(gcloud secrets versions access latest --secret=mcp-api-key)
 cat >> ~/.jarvis/.env <<EOF
-JARVIS_TIME_MCP_URL=${URL}/mcp
+JARVIS_MCP_URL=${URL}/mcp
 MCP_API_KEY=${KEY}
 EOF
 ```
 
 Now `jarvis` (or `python -m jarvis.mcp list`) connects to the cloud server with no
-inline vars. Wrong/absent key → the CLI degrades cleanly to weather-only with
-`✗ time: unauthorized`.
+inline vars; its tools are namespaced `jarvis.*` (e.g. `jarvis.get_weather_digest`).
+Wrong/absent key → the CLI degrades cleanly with `✗ jarvis: unauthorized`.
 
 ## How scaling & cold starts work (briefly)
 

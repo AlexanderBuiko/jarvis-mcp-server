@@ -138,6 +138,14 @@ class WeatherStore:
         with self._connect() as conn:
             return int(conn.execute(sql, params).fetchone()["n"])
 
+    def cities_with_data(self) -> list[str]:
+        """Distinct city keys that actually have stored measurements."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT city FROM weather_measurements ORDER BY city"
+            ).fetchall()
+        return [r["city"] for r in rows]
+
     def measurements_since(self, cutoff_iso: str, city: str = "Tokyo") -> list[dict]:
         """Rows for ``city`` with timestamp >= ``cutoff_iso``, oldest first."""
         with self._connect() as conn:

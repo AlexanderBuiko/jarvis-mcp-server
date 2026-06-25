@@ -21,7 +21,15 @@ _RAIN_WORDS = ("rain", "drizzle", "shower", "thunderstorm")
 # the window's first and second half are reported as "stable".
 _TREND_DEADBAND_C = 0.5
 
-_PERIOD_RE = re.compile(r"^\s*(\d+)\s*([hd])\s*$", re.IGNORECASE)
+# A count followed by a unit. The unit is forgiving — short or spelled-out,
+# singular or plural — because the value usually comes straight from an LLM that
+# may emit "24h", "7 days" or "1 week". Hours in each unit:
+_UNIT_HOURS = {
+    "h": 1, "hr": 1, "hrs": 1, "hour": 1, "hours": 1,
+    "d": 24, "day": 24, "days": 24,
+    "w": 168, "wk": 168, "wks": 168, "week": 168, "weeks": 168,
+}
+_PERIOD_RE = re.compile(r"^\s*(\d+)\s*([a-z]+)\s*$", re.IGNORECASE)
 
 
 class InvalidPeriod(ValueError):
@@ -29,19 +37,21 @@ class InvalidPeriod(ValueError):
 
 
 def parse_period(period: str) -> timedelta:
-    """Parse a period like ``"24h"`` or ``"7d"`` into a ``timedelta``.
+    """Parse a period like ``"24h"``, ``"7d"`` or ``"1w"`` into a ``timedelta``.
 
-    Accepts an integer count followed by ``h`` (hours) or ``d`` (days).
+    Accepts a positive integer count followed by a unit: hours (``h``/``hour``/
+    ``hours``), days (``d``/``day``/``days``) or weeks (``w``/``week``/``weeks``),
+    with optional spaces — so ``"24h"``, ``"7 days"`` and ``"1 week"`` all work.
     """
     match = _PERIOD_RE.match(period or "")
-    if not match:
-        raise InvalidPeriod(
-            f"Invalid period {period!r}. Use a number followed by 'h' or 'd', e.g. '24h' or '7d'."
-        )
-    amount, unit = int(match.group(1)), match.group(2).lower()
-    if amount <= 0:
-        raise InvalidPeriod(f"Period must be positive, got {period!r}.")
-    return timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
+    if match:
+        amount, unit = int(match.group(1)), match.group(2).lower()
+        if amount > 0 and unit in _UNIT_HOURS:
+            return timedelta(hours=amount * _UNIT_HOURS[unit])
+    raise InvalidPeriod(
+        f"Invalid period {period!r}. Use a positive number followed by a unit, "
+        f"e.g. '24h', '7d' or '1w'."
+    )
 
 
 def cutoff_for(period: str, now: datetime | None = None) -> str:
