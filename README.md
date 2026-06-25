@@ -15,12 +15,61 @@ deployment.
 | Tool | Args | Returns |
 |---|---|---|
 | `get_current_time` | `city: str` | Current local time + timezone for the city |
+| `get_weather_digest` | `period: str` (e.g. `24h`, `7d`), `city: str` (default Tokyo) | Aggregated weather digest for a city (JSON) |
+| `add_city` | `city: str` | Start collecting weather for a city; returns the tracked-city list |
+| `remove_city` | `city: str` | Stop collecting a city (its history is kept); returns the tracked-city list |
+| `list_cities` | — | The cities currently being collected |
 | `echo` | `text: str` | The input unchanged (connectivity smoke-test) |
 
 `get_current_time` is a two-hop pipeline: **Open-Meteo geocoding** (city → lat/lon)
 → **TimeAPI.io** (lat/lon → local time). Both APIs are free and need no key. If the
 network is unavailable it falls back to the system UTC clock, so a call never
 hard-fails.
+
+### Tokyo weather digest (a scheduled agent)
+
+The [`weather_digest/`](weather_digest) package runs a **continuous agent**: while
+the server is up, a background thread collects the current weather **once an hour**
+for **every tracked city** (Open-Meteo, with a mock fallback when offline) and
+stores each reading in **SQLite** (`weather_measurements` table). The scheduler
+starts with the server (via the ASGI lifespan) and stops cleanly on shutdown — it
+runs independently of any tool call.
+
+**Tracked cities are managed at runtime.** Tokyo is tracked by default; `add_city`
+/ `remove_city` / `list_cities` change the set live (no restart). `add_city` does
+one immediate collection so a new city has data right away; `remove_city` only
+stops future collection — the city's stored history is preserved (re-adding
+resumes with it intact). The set is persisted in a `tracked_cities` table, so it
+survives restarts.
+
+`get_weather_digest(period, city)` aggregates the stored readings over a window
+(`city` defaults to Tokyo):
+
+```json
+{
+  "city": "Tokyo", "period": "24h", "sample_count": 36,
+  "average_temperature": 19.0, "min_temperature": 12.7, "max_temperature": 24.1,
+  "most_common_condition": "overcast", "rainfall_occurrences": 7,
+  "temperature_trend": "rising",
+  "window_start": "...", "window_end": "..."
+}
+```
+
+On a **fresh/empty database** the store auto-seeds **7 days of realistic hourly
+mock readings** (multiple conditions, rainfall, diurnal temperature swing), so a
+digest is demoable immediately — before the hourly scheduler has collected
+anything live.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `WEATHER_DB_PATH` | `weather_digest/weather.db` | SQLite file location |
+| `WEATHER_CITY` | `Tokyo` | Default city (always tracked + seeded); add more via `add_city` |
+| `WEATHER_COLLECT_INTERVAL_S` | `3600` | Seconds between collections (lower for demos) |
+
+> **Cloud Run note:** with `--min-instances 0` the service scales to zero when
+> idle, so the hourly collection only runs while an instance is alive. The seed
+> data keeps the digest meaningful regardless; set `--min-instances 1` for
+> uninterrupted hourly collection.
 
 ## Run locally
 
@@ -75,7 +124,9 @@ and how scaling / cold starts work.
 
 ## Roadmap
 
-- [x] Standalone Streamable HTTP server + two tools
+- [x] Standalone Streamable HTTP server + tools (`get_current_time`, `get_weather_digest`)
+- [x] Scheduled weather-digest agent (hourly collection → SQLite → aggregation)
+- [x] Runtime-managed multi-city collection (`add_city` / `remove_city` / `list_cities`)
 - [x] Local test via MCP Inspector
 - [x] JarvisCLI client wired (auth-aware, degrades cleanly when down/unauthorized)
 - [x] API-key auth middleware (pure-ASGI, constant-time, `/healthz` exempt)

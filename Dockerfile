@@ -18,6 +18,12 @@ RUN pip install -r requirements.txt
 
 # Copy the application code (changes often → kept after the deps layer).
 COPY time_server ./time_server
+COPY weather_digest ./weather_digest
+
+# The hourly weather scheduler writes its SQLite DB here. The container FS is
+# ephemeral (the DB resets on each new revision and is re-seeded on startup),
+# which is fine for this digest demo.
+ENV WEATHER_DB_PATH=/tmp/weather.db
 
 # Run as a non-root user (defence in depth; Cloud Run also enforces this).
 RUN useradd --create-home --uid 10001 appuser
