@@ -7,6 +7,11 @@ venv/
 .DS_Store
 .env
 
+# SQLite database written by the weather-digest scheduler (regenerated at runtime).
+weather.db
+weather.db-wal
+weather.db-shm
+
 # IDE
 .idea/
 .vscode/
