@@ -16,6 +16,9 @@ deployment.
 |---|---|---|
 | `get_current_time` | `city: str` | Current local time + timezone for the city |
 | `get_weather_digest` | `period: str` (e.g. `24h`, `7d`), `city: str` (default Tokyo) | Aggregated weather digest for a city (JSON) |
+| `get_weather_readings` | `city: str` (default Tokyo), `period: str` (≤ 7 days) | Compact per-day weather report (JSON) — input to the anomaly pipeline |
+| `detect_weather_anomalies` | `weather_report: str` (a `get_weather_readings` report) | Deterministic anomaly report (JSON) |
+| `send_telegram_alert` | `anomaly_report: str` (a `detect_weather_anomalies` report), `notify_when_clear: bool` (default `false`) | Sends a Telegram alert if anomalies exist; with `notify_when_clear=true` also sends an "all clear" message when none (JSON result) |
 | `add_city` | `city: str` | Start collecting weather for a city; returns the tracked-city list |
 | `remove_city` | `city: str` | Stop collecting a city (its history is kept); returns the tracked-city list |
 | `list_cities` | — | The cities currently being collected |
@@ -70,6 +73,54 @@ anything live.
 > idle, so the hourly collection only runs while an instance is alive. The seed
 > data keeps the digest meaningful regardless; set `--min-instances 1` for
 > uninterrupted hourly collection.
+
+### Weather-anomaly pipeline (three chained tools)
+
+A realistic workflow built from three tools the LLM chains automatically:
+
+```
+get_weather_readings → detect_weather_anomalies → send_telegram_alert
+```
+
+> *"Analyze Tokyo weather for the last week. If unusual weather conditions are
+> detected, send a Telegram alert."*
+
+1. **`get_weather_readings(city, period)`** reads the stored measurements and rolls
+   them up **server-side** into a compact per-day report (mean/min/max temperature
+   and rainy fraction per UTC day). The raw rows never leave the server, so the data
+   the model relays to the next tool stays tiny. `period` is capped at **7 days**.
+
+2. **`detect_weather_anomalies(weather_report)`** applies **deterministic rules** to
+   that report and lists any anomalies. It accepts **only** a `get_weather_readings`
+   report — a raw-readings array, a missing marker, too many day-buckets, or an
+   oversized payload are rejected **in code** (not just by the prompt), so a large
+   array can never be relayed in. Rules (thresholds overridable via `ANOMALY_*` env
+   vars):
+
+   | Anomaly | Trigger | Default |
+   |---|---|---|
+   | `rapid_temperature_rise` / `_drop` | max/min day-over-day mean Δ | ±6 °C |
+   | `high_temperature_variability` | window max − min | 18 °C |
+   | `high_rainfall_frequency` | mean daily rainy fraction | 40 % |
+   | `unusually_dry` | mean daily rainy fraction (≥ 3 days) | 5 % |
+   | `prolonged_bad_weather` | consecutive mostly-rainy days | 3 days |
+   | `warming_trend` / `cooling_trend` | first-half vs second-half mean Δ | ±4 °C |
+
+3. **`send_telegram_alert(anomaly_report, notify_when_clear=false)`** sends a
+   Telegram message **only if anomalies were found** (otherwise it skips). Pass
+   `notify_when_clear=true` to also send a reassuring "all clear" message when no
+   anomalies were detected — handy for a scheduled all-is-well check-in. If Telegram
+   is not configured it reports that without failing. Uses the Telegram Bot API over
+   stdlib `urllib` (no new dependency); the bot token is never logged or returned.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | _(unset)_ | Bot token from [@BotFather](https://t.me/BotFather). Unset → sends are skipped with `not configured`. |
+| `TELEGRAM_CHAT_ID` | _(unset)_ | Chat/channel id to deliver alerts to. |
+| `ANOMALY_*` | _(rule defaults)_ | Override any threshold above, e.g. `ANOMALY_RAPID_TEMP_DELTA_C=8`. |
+
+To get a `TELEGRAM_CHAT_ID`: message your bot, then open
+`https://api.telegram.org/bot<token>/getUpdates` and read `result[].message.chat.id`.
 
 ## Run locally
 
@@ -127,6 +178,7 @@ and how scaling / cold starts work.
 - [x] Standalone Streamable HTTP server + tools (`get_current_time`, `get_weather_digest`)
 - [x] Scheduled weather-digest agent (hourly collection → SQLite → aggregation)
 - [x] Runtime-managed multi-city collection (`add_city` / `remove_city` / `list_cities`)
+- [x] Weather-anomaly pipeline (`get_weather_readings` → `detect_weather_anomalies` → `send_telegram_alert`)
 - [x] Local test via MCP Inspector
 - [x] JarvisCLI client wired (auth-aware, degrades cleanly when down/unauthorized)
 - [x] API-key auth middleware (pure-ASGI, constant-time, `/healthz` exempt)

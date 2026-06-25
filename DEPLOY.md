@@ -29,6 +29,26 @@ gcloud secrets add-iam-policy-binding mcp-api-key \
   --role="roles/secretmanager.secretAccessor"
 ```
 
+## 1b. (Optional) Telegram alert credentials as secrets
+
+Needed only for the `send_telegram_alert` pipeline tool. Without them the tool is a
+safe no-op (`not configured`), so this step is skippable for a time/weather-only
+deployment.
+
+```bash
+# Bot token from @BotFather, and the chat id to deliver alerts to.
+printf '%s' "$TELEGRAM_BOT_TOKEN" | gcloud secrets create telegram-bot-token --data-file=-
+printf '%s' "$TELEGRAM_CHAT_ID"   | gcloud secrets create telegram-chat-id   --data-file=-
+
+# Let the Cloud Run runtime service account read them.
+PROJECT_NUMBER=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
+for s in telegram-bot-token telegram-chat-id; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
+
 ## 2. Build + deploy from source
 
 `--source .` makes Cloud Build build the Dockerfile and push the image for you.
@@ -41,11 +61,15 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --set-env-vars TRANSPORT=streamable-http,LOG_LEVEL=INFO \
   --set-secrets MCP_API_KEY=mcp-api-key:latest \
+  --set-secrets TELEGRAM_BOT_TOKEN=telegram-bot-token:latest,TELEGRAM_CHAT_ID=telegram-chat-id:latest \
   --min-instances 0 \
   --max-instances 2 \
   --timeout 3600 \
   --cpu 1 --memory 256Mi
 ```
+
+> Omit the second `--set-secrets` line if you skipped step 1b — the Telegram tool
+> then runs as a safe no-op.
 
 > **Staying in the free tier (personal use).** `--min-instances 0` is the key flag:
 > the service scales to **zero** when idle, so you pay nothing between uses and stay

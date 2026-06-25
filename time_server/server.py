@@ -29,9 +29,18 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
-from weather_digest.aggregate import InvalidPeriod, build_digest, cutoff_for
+from weather_digest.aggregate import (
+    MAX_READINGS_HOURS,
+    InvalidPeriod,
+    build_digest,
+    build_readings_report,
+    cutoff_for,
+    parse_period,
+)
+from weather_digest.anomalies import InvalidReport, detect_anomalies, validate_report
 from weather_digest.scheduler import DEFAULT_INTERVAL_S, WeatherScheduler
 from weather_digest.storage import WeatherStore
+from weather_digest import telegram
 
 from .auth import ApiKeyAuthMiddleware
 from .clients import time_in_city
@@ -139,6 +148,107 @@ def get_weather_digest(period: str = "24h", city: str = "") -> str:
         digest["default_city"] = WEATHER_CITY
         digest["cities_with_data"] = store.cities_with_data()
     return json.dumps(digest, indent=2)
+
+
+@mcp.tool()
+def get_weather_readings(city: str = "", period: str = "7d") -> str:
+    """Return a compact per-day weather report for a city over a period (≤ 7 days).
+
+    The first tool in the anomaly pipeline. It reads the stored measurements and
+    rolls them up **server-side** into a small report — one bucket per UTC day with
+    mean/min/max temperature and the fraction of rainy readings — so the raw rows
+    never leave the server. Feed this report straight into detect_weather_anomalies.
+
+    Args:
+        period: time window, a number plus a unit (e.g. "24h", "7d", "1w"). Capped
+            at 7 days; a longer window returns an error.
+        city: city name in English / Latin script (e.g. "Tokyo"). Defaults to Tokyo.
+
+    If the city has no stored data the report's sample_count is 0 and it lists the
+    cities that do have data, so you can retry with one of those.
+    """
+    store = _store or WeatherStore()
+    target = (city or "").strip() or WEATHER_CITY
+    store.seed_if_empty(WEATHER_CITY)
+    try:
+        delta = parse_period(period)
+    except InvalidPeriod as exc:
+        return json.dumps({"error": str(exc)})
+    if delta.total_seconds() > MAX_READINGS_HOURS * 3600:
+        return json.dumps({
+            "error": "period must be 7 days or less for get_weather_readings; "
+                     f"got {period!r}."
+        })
+    rows = store.measurements_since(cutoff_for(period), city=target)
+    report = build_readings_report(rows, period=period, city=target)
+    if report.get("sample_count", 0) == 0:
+        report["default_city"] = WEATHER_CITY
+        report["cities_with_data"] = store.cities_with_data()
+    return json.dumps(report, indent=2)
+
+
+@mcp.tool()
+def detect_weather_anomalies(weather_report: str = "") -> str:
+    """Detect unusual weather from a get_weather_readings report (deterministic rules).
+
+    The second tool in the pipeline. Pass it the **report object returned by
+    get_weather_readings** — not raw readings. Detected anomaly types include rapid
+    day-over-day temperature rises/drops, high temperature variability, unusually
+    high or low rainfall frequency, prolonged bad weather, and warming/cooling
+    trends. Returns a small report with an ``anomaly_count`` and an ``anomalies``
+    list; feed that to send_telegram_alert.
+
+    Raw readings (a JSON array) or any payload that is not a get_weather_readings
+    report are rejected with an explanatory error, so retry by calling
+    get_weather_readings first.
+    """
+    try:
+        report = validate_report(weather_report)
+    except InvalidReport as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(detect_anomalies(report), indent=2)
+
+
+@mcp.tool()
+def send_telegram_alert(anomaly_report: str = "", notify_when_clear: bool = False) -> str:
+    """Send a Telegram alert for a detect_weather_anomalies report.
+
+    The third tool in the pipeline. Pass it the report from detect_weather_anomalies.
+
+    Args:
+        anomaly_report: the JSON report from detect_weather_anomalies.
+        notify_when_clear: by default (False) nothing is sent when no anomalies were
+            detected. Set True to also send a reassuring "all clear" message in that
+            case (e.g. for a scheduled all-is-well check-in).
+
+    If Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unset) it
+    reports that without failing the turn. Returns a small result describing what
+    happened.
+    """
+    try:
+        report = json.loads(anomaly_report or "")
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"sent": False, "skipped": False,
+                           "reason": "anomaly_report is not valid JSON; pass the "
+                                     "detect_weather_anomalies output."})
+    if not isinstance(report, dict):
+        return json.dumps({"sent": False, "skipped": False,
+                           "reason": "anomaly_report must be a JSON object."})
+
+    count = int(report.get("anomaly_count", 0) or 0)
+    if count <= 0 and not notify_when_clear:
+        return json.dumps({"sent": False, "skipped": True, "anomaly_count": 0,
+                           "reason": "no anomalies detected; nothing to alert"})
+
+    message = telegram.format_alert(report) if count > 0 else telegram.format_all_clear(report)
+    result = telegram.send_message(message)
+    return json.dumps({
+        "sent": bool(result.get("ok")),
+        "skipped": False,
+        "anomaly_count": count,
+        "reason": result.get("reason"),
+        "message_preview": message,
+    })
 
 
 @mcp.tool()
