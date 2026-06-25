@@ -111,14 +111,18 @@ def get_current_time(city: str) -> str:
 def get_weather_digest(period: str = "24h", city: str = "") -> str:
     """Return an aggregated weather digest for a city over a period.
 
-    period: a window like "24h" or "7d". city: which tracked city to summarise
-    (defaults to the server's default city, Tokyo).
+    Args:
+        period: time window — a number plus a unit, e.g. "24h", "7d" or "1w".
+        city: city name **in English / Latin script** (e.g. "Tokyo", not "Токио") —
+            measurements are stored under the English name the data source uses, so
+            a localized name will match nothing. Defaults to Tokyo.
 
     Reads the measurements the background scheduler has stored and aggregates
     them: average / min / max temperature, the most common weather condition,
-    how many readings had rainfall, and a simple temperature trend. The result is
-    a JSON object. The default city is auto-seeded with mock data so a digest is
-    always available; other cities accumulate data once added via add_city.
+    how many readings had rainfall, and a simple temperature trend, as a JSON
+    object. The default city is auto-seeded with mock data so a digest is always
+    available; other cities accumulate data once added via add_city. If the city
+    has no data, the result lists the cities that do, so you can retry.
     """
     store = _store or WeatherStore()
     target = (city or "").strip() or WEATHER_CITY
@@ -129,6 +133,11 @@ def get_weather_digest(period: str = "24h", city: str = "") -> str:
         return json.dumps({"error": str(exc)})
     rows = store.measurements_since(cutoff, city=target)
     digest = build_digest(rows, period=period, city=target)
+    if digest.get("sample_count", 0) == 0:
+        # Make the empty case self-correcting: tell the caller which English city
+        # keys actually have data (the most common cause is a localized name).
+        digest["default_city"] = WEATHER_CITY
+        digest["cities_with_data"] = store.cities_with_data()
     return json.dumps(digest, indent=2)
 
 

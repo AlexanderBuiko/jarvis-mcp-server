@@ -111,12 +111,15 @@ def test_empty_window_digest():
     assert "note" in d
 
 
-@pytest.mark.parametrize("period,hours", [("24h", 24), ("7d", 168), ("1h", 1)])
+@pytest.mark.parametrize("period,hours", [
+    ("24h", 24), ("7d", 168), ("1h", 1), ("1w", 168), ("2w", 336),
+    ("7 days", 168), ("1 week", 168), ("24 hours", 24),
+])
 def test_parse_period_valid(period, hours):
     assert aggregate.parse_period(period).total_seconds() == hours * 3600
 
 
-@pytest.mark.parametrize("bad", ["", "abc", "10", "0h", "-3d", "5w"])
+@pytest.mark.parametrize("bad", ["", "abc", "10", "0h", "-3d", "5x", "одна неделя"])
 def test_parse_period_invalid(bad):
     with pytest.raises(aggregate.InvalidPeriod):
         aggregate.parse_period(bad)
@@ -204,6 +207,19 @@ def test_get_weather_digest_invalid_period(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_store", None)
     digest = json.loads(server.get_weather_digest("nonsense"))
     assert "error" in digest
+
+
+def test_empty_city_digest_lists_available_cities(tmp_path, monkeypatch):
+    # The localized-name case: asking for a city with no data should hand back
+    # the English keys that *do* have data, so the caller can retry.
+    monkeypatch.setenv("WEATHER_DB_PATH", str(tmp_path / "weather.db"))
+    from time_server import server
+
+    monkeypatch.setattr(server, "_store", None)
+    digest = json.loads(server.get_weather_digest("7d", city="Токио"))
+    assert digest["sample_count"] == 0
+    assert digest["default_city"] == "Tokyo"
+    assert "Tokyo" in digest["cities_with_data"]
 
 
 def _fresh_server(tmp_path, monkeypatch):
