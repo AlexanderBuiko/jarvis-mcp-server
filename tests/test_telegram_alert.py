@@ -174,6 +174,28 @@ def test_send_alert_rejects_bad_json(server):
     assert "not valid JSON" in json.loads(server.send_telegram_alert("{bad"))["reason"]
 
 
+def test_send_alert_accepts_dict_and_repr(server, monkeypatch):
+    # The model may pass the report object directly, or a str()-ified (repr) form;
+    # both must work, not only a JSON string.
+    sent = []
+    monkeypatch.setattr(telegram, "send_message",
+                        lambda text: sent.append(text) or {"ok": True})
+    report = {"city": "Tokyo", "period": "7d", "anomaly_count": 1,
+              "anomalies": [{"type": "x", "severity": "high", "detail": "y"}],
+              "summary": "s"}
+    assert json.loads(server.send_telegram_alert(report))["sent"] is True          # dict
+    assert json.loads(server.send_telegram_alert(str(report)))["sent"] is True      # repr
+    assert len(sent) == 2
+
+
+def test_detect_tool_accepts_dict_report(server):
+    # detect_weather_anomalies must accept the report object, not only its JSON text.
+    import json as _json
+    readings = _json.loads(server.get_weather_readings(period="7d"))  # a dict
+    result = _json.loads(server.detect_weather_anomalies(readings))
+    assert "anomaly_count" in result
+
+
 # ── End-to-end chain (in-process) ────────────────────────────────────────────
 
 def test_full_pipeline_in_process(server, monkeypatch):

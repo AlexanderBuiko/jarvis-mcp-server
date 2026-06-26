@@ -22,6 +22,7 @@ Configuration is via environment variables (12-factor, Cloud Run-friendly):
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -150,6 +151,30 @@ def get_weather_digest(period: str = "24h", city: str = "") -> str:
     return json.dumps(digest, indent=2)
 
 
+def _coerce_json_obj(value):
+    """Accept a dict/list as-is, or parse a JSON (or Python-repr) string into one.
+
+    Returns the parsed object, or None if it's empty/unparseable. This lets the
+    pipeline tools take either a structured object or its text form, so the model
+    needn't re-serialize a prior tool's output — and a Python-repr slip (single
+    quotes, from str(dict)) still parses via the literal_eval fallback.
+    """
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    try:
+        obj = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return None
+    return obj if isinstance(obj, (dict, list)) else None
+
+
 @mcp.tool()
 def get_weather_readings(city: str = "", period: str = "7d") -> str:
     """Return a compact per-day weather report for a city over a period (≤ 7 days).
@@ -188,15 +213,16 @@ def get_weather_readings(city: str = "", period: str = "7d") -> str:
 
 
 @mcp.tool()
-def detect_weather_anomalies(weather_report: str = "") -> str:
+def detect_weather_anomalies(weather_report: str | dict = "") -> str:
     """Detect unusual weather from a get_weather_readings report (deterministic rules).
 
-    The second tool in the pipeline. Pass it the **report object returned by
-    get_weather_readings** — not raw readings. Detected anomaly types include rapid
-    day-over-day temperature rises/drops, high temperature variability, unusually
-    high or low rainfall frequency, prolonged bad weather, and warming/cooling
-    trends. Returns a small report with an ``anomaly_count`` and an ``anomalies``
-    list; feed that to send_telegram_alert.
+    The second tool in the pipeline. Pass it the **report from get_weather_readings**
+    — either the report object directly or its JSON text; both are accepted, so you
+    don't need to re-serialize it. Detected anomaly types include rapid day-over-day
+    temperature rises/drops, high temperature variability, unusually high or low
+    rainfall frequency, prolonged bad weather, and warming/cooling trends. Returns a
+    small report with an ``anomaly_count`` and an ``anomalies`` list; feed that to
+    send_telegram_alert.
 
     Raw readings (a JSON array) or any payload that is not a get_weather_readings
     report are rejected with an explanatory error, so retry by calling
@@ -210,13 +236,14 @@ def detect_weather_anomalies(weather_report: str = "") -> str:
 
 
 @mcp.tool()
-def send_telegram_alert(anomaly_report: str = "", notify_when_clear: bool = False) -> str:
+def send_telegram_alert(anomaly_report: str | dict = "", notify_when_clear: bool = False) -> str:
     """Send a Telegram alert for a detect_weather_anomalies report.
 
-    The third tool in the pipeline. Pass it the report from detect_weather_anomalies.
+    The third tool in the pipeline. Pass it the report from detect_weather_anomalies
+    — either the report object directly or its JSON text; both are accepted.
 
     Args:
-        anomaly_report: the JSON report from detect_weather_anomalies.
+        anomaly_report: the report from detect_weather_anomalies (object or JSON).
         notify_when_clear: by default (False) nothing is sent when no anomalies were
             detected. Set True to also send a reassuring "all clear" message in that
             case (e.g. for a scheduled all-is-well check-in).
@@ -225,9 +252,8 @@ def send_telegram_alert(anomaly_report: str = "", notify_when_clear: bool = Fals
     reports that without failing the turn. Returns a small result describing what
     happened.
     """
-    try:
-        report = json.loads(anomaly_report or "")
-    except (json.JSONDecodeError, TypeError):
+    report = _coerce_json_obj(anomaly_report)
+    if report is None:
         return json.dumps({"sent": False, "skipped": False,
                            "reason": "anomaly_report is not valid JSON; pass the "
                                      "detect_weather_anomalies output."})
