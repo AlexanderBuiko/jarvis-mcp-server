@@ -82,6 +82,12 @@ def test_validate_accepts_dict_and_json_string():
     assert validate_report(json.dumps(report))["city"] == "Tokyo"
 
 
+def test_validate_accepts_python_repr_string():
+    # A model that serialized the report with str() (single quotes) still works.
+    report = _report([_day("2026-06-19", 20.0, 16.0, 24.0, 0.1)])
+    assert validate_report(str(report))["city"] == "Tokyo"
+
+
 def test_validate_rejects_raw_array():
     raw = json.dumps([
         {"timestamp": "2026-06-19T00:00:00+00:00", "temperature": 20.0,

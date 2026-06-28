@@ -174,6 +174,52 @@ def test_send_alert_rejects_bad_json(server):
     assert "not valid JSON" in json.loads(server.send_telegram_alert("{bad"))["reason"]
 
 
+def test_send_alert_accepts_dict_and_repr(server, monkeypatch):
+    # The model may pass the report object directly, or a str()-ified (repr) form;
+    # both must work, not only a JSON string.
+    sent = []
+    monkeypatch.setattr(telegram, "send_message",
+                        lambda text: sent.append(text) or {"ok": True})
+    report = {"city": "Tokyo", "period": "7d", "anomaly_count": 1,
+              "anomalies": [{"type": "x", "severity": "high", "detail": "y"}],
+              "summary": "s"}
+    assert json.loads(server.send_telegram_alert(report))["sent"] is True          # dict
+    assert json.loads(server.send_telegram_alert(str(report)))["sent"] is True      # repr
+    assert len(sent) == 2
+
+
+def test_send_alert_composed_message_sent_verbatim(server, monkeypatch):
+    # message=... is delivered as-is, regardless of anomaly state — this is how the
+    # notification carries the report + translated news + timestamp together.
+    sent = {}
+    monkeypatch.setattr(telegram, "send_message",
+                        lambda text: sent.update(text=text) or {"ok": True})
+    composed = ("Tokyo weather report: no anomalies.\n"
+                "News (EN): Storm approaches Tokyo.\nLocal time: 2026-06-28 20:10")
+    out = json.loads(server.send_telegram_alert(message=composed))
+    assert out["sent"] is True
+    assert out["skipped"] is False
+    assert sent["text"] == composed  # verbatim, not reformatted
+
+
+def test_send_alert_composed_message_ignores_anomaly_skip(server, monkeypatch):
+    # Even with no anomaly_report and notify_when_clear False, an explicit message
+    # is still sent (the "skip when clear" rule only applies to auto-formatting).
+    sent = []
+    monkeypatch.setattr(telegram, "send_message", lambda text: sent.append(text) or {"ok": True})
+    out = json.loads(server.send_telegram_alert(message="hi from jarvis"))
+    assert out["sent"] is True
+    assert sent == ["hi from jarvis"]
+
+
+def test_detect_tool_accepts_dict_report(server):
+    # detect_weather_anomalies must accept the report object, not only its JSON text.
+    import json as _json
+    readings = _json.loads(server.get_weather_readings(period="7d"))  # a dict
+    result = _json.loads(server.detect_weather_anomalies(readings))
+    assert "anomaly_count" in result
+
+
 # ── End-to-end chain (in-process) ────────────────────────────────────────────
 
 def test_full_pipeline_in_process(server, monkeypatch):

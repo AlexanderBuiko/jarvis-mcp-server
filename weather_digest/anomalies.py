@@ -17,6 +17,7 @@ reports. No DB, no MCP, no network here.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 
@@ -65,6 +66,24 @@ def default_thresholds() -> dict:
 
 # ── Input guard (code-enforced "short report only") ──────────────────────────
 
+def _parse_obj(raw: str):
+    """Parse a JSON string, falling back to a Python-repr literal; None on failure.
+
+    The fallback tolerates a model that serialized a dict with str() (single quotes)
+    instead of JSON — a common slip when relaying a prior tool's output.
+    """
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    try:
+        return ast.literal_eval(raw)
+    except (ValueError, SyntaxError):
+        return None
+
+
 def validate_report(weather_report) -> dict:
     """Parse and validate a get_weather_readings report; raise on anything else.
 
@@ -79,13 +98,12 @@ def validate_report(weather_report) -> dict:
         parsed = weather_report
     else:
         raw = str(weather_report or "")
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, TypeError) as exc:
+        parsed = _parse_obj(raw)
+        if parsed is None:
             raise InvalidReport(
                 "weather_report is not valid JSON. Pass the report returned by "
                 "get_weather_readings."
-            ) from exc
+            )
 
     if len(raw) > MAX_REPORT_BYTES:
         raise InvalidReport(
