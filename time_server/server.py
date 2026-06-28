@@ -236,22 +236,38 @@ def detect_weather_anomalies(weather_report: str | dict = "") -> str:
 
 
 @mcp.tool()
-def send_telegram_alert(anomaly_report: str | dict = "", notify_when_clear: bool = False) -> str:
-    """Send a Telegram alert for a detect_weather_anomalies report.
+def send_telegram_alert(
+    anomaly_report: str | dict = "", notify_when_clear: bool = False, message: str = ""
+) -> str:
+    """Send a Telegram notification.
 
-    The third tool in the pipeline. Pass it the report from detect_weather_anomalies
-    — either the report object directly or its JSON text; both are accepted.
+    Two modes:
 
-    Args:
-        anomaly_report: the report from detect_weather_anomalies (object or JSON).
-        notify_when_clear: by default (False) nothing is sent when no anomalies were
-            detected. Set True to also send a reassuring "all clear" message in that
-            case (e.g. for a scheduled all-is-well check-in).
+    * **Composed message (preferred for rich notifications):** pass ``message`` with
+      the full text you want delivered — e.g. an anomaly summary plus a translated
+      news digest and the local timestamp. It is sent verbatim, regardless of
+      whether anomalies were detected. Use this when the notification must contain
+      more than the anomaly report alone.
+    * **Auto-formatted anomaly alert:** omit ``message`` and pass ``anomaly_report``
+      (the detect_weather_anomalies output, object or JSON). A message is formatted
+      from it and sent only when anomalies exist — unless ``notify_when_clear`` is
+      True, which also sends a reassuring "all clear".
 
     If Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unset) it
     reports that without failing the turn. Returns a small result describing what
     happened.
     """
+    # Composed-message mode: send exactly what the caller assembled.
+    text = str(message or "").strip()
+    if text:
+        result = telegram.send_message(text)
+        return json.dumps({
+            "sent": bool(result.get("ok")),
+            "skipped": False,
+            "reason": result.get("reason"),
+            "message_preview": text[:500],
+        })
+
     report = _coerce_json_obj(anomaly_report)
     if report is None:
         return json.dumps({"sent": False, "skipped": False,

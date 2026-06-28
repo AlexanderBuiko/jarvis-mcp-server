@@ -188,6 +188,30 @@ def test_send_alert_accepts_dict_and_repr(server, monkeypatch):
     assert len(sent) == 2
 
 
+def test_send_alert_composed_message_sent_verbatim(server, monkeypatch):
+    # message=... is delivered as-is, regardless of anomaly state — this is how the
+    # notification carries the report + translated news + timestamp together.
+    sent = {}
+    monkeypatch.setattr(telegram, "send_message",
+                        lambda text: sent.update(text=text) or {"ok": True})
+    composed = ("Tokyo weather report: no anomalies.\n"
+                "News (EN): Storm approaches Tokyo.\nLocal time: 2026-06-28 20:10")
+    out = json.loads(server.send_telegram_alert(message=composed))
+    assert out["sent"] is True
+    assert out["skipped"] is False
+    assert sent["text"] == composed  # verbatim, not reformatted
+
+
+def test_send_alert_composed_message_ignores_anomaly_skip(server, monkeypatch):
+    # Even with no anomaly_report and notify_when_clear False, an explicit message
+    # is still sent (the "skip when clear" rule only applies to auto-formatting).
+    sent = []
+    monkeypatch.setattr(telegram, "send_message", lambda text: sent.append(text) or {"ok": True})
+    out = json.loads(server.send_telegram_alert(message="hi from jarvis"))
+    assert out["sent"] is True
+    assert sent == ["hi from jarvis"]
+
+
 def test_detect_tool_accepts_dict_report(server):
     # detect_weather_anomalies must accept the report object, not only its JSON text.
     import json as _json
