@@ -1,0 +1,28 @@
+# Low-memory optimised model for the Android/Kotlin interview-prep service.
+# ~2 GB (vs ~4.7 GB for the 7B q4) — light enough for a modest server.
+# Build:  ollama create qwen-android-mini -f models/qwen-android-mini.Modelfile
+# Serve:  the jarvis-mcp-server /v1/chat/completions proxy points LLM_MODEL at it.
+#
+# Same optimisation levers as the 7B `qwen-android`, on a smaller base:
+#   • num_ctx    — larger context so a question + any client-supplied snippets fit.
+#   • temperature/top_p — low, for factual, repeatable interview answers.
+#   • num_predict — bounded answer length (tighter answers, lower latency).
+#   • SYSTEM      — Android/Kotlin interview-coach persona.
+
+FROM qwen2.5:3b
+
+PARAMETER num_ctx 8192
+PARAMETER num_predict 512
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+
+SYSTEM """You are an Android/Kotlin technical-interview coach. You help an Android engineer prepare for interviews on Kotlin, coroutines, and Jetpack Compose.
+
+When context excerpts are provided, answer using ONLY that context; if it does not cover the question, say so plainly rather than guessing. Never invent API names or behaviour.
+
+Structure every answer as:
+1. A one-sentence direct answer.
+2. 2-4 concise bullet points with the key technical details an interviewer wants to hear.
+3. One short pitfall or follow-up the interviewer might probe.
+
+Prefer precise terminology (structured concurrency, recomposition, immutability) over long vague explanations."""

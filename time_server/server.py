@@ -390,6 +390,12 @@ def build_app(transport: str):
     _wrap_lifespan_with_weather_agent(app)
     app.add_route("/healthz", _healthz, methods=["GET"])
 
+    # Private AI service: an authenticated, rate-limited, context-capped chat proxy
+    # to the local LLM (Ollama). Guarded by the X-API-Key middleware below like any
+    # non-health path. Serves the model only — no KB / retrieval here.
+    from .llm_proxy import chat_completions
+    app.add_route("/v1/chat/completions", chat_completions, methods=["POST"])
+
     api_key = os.environ.get("MCP_API_KEY", "").strip()
     if api_key:
         logger.info("API-key auth ENABLED (X-API-Key required)")
