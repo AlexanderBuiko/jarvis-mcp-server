@@ -57,6 +57,10 @@ _COLLECT_INTERVAL_S = float(os.environ.get("WEATHER_COLLECT_INTERVAL_S", DEFAULT
 _store: WeatherStore | None = None
 _scheduler: WeatherScheduler | None = None
 
+# The private quiz bot (background poll thread), started on server startup when
+# configured (TELEGRAM_BOT_TOKEN + allow-listed user ids).
+_quiz_bot = None
+
 
 def _start_weather_agent() -> None:
     """Open the DB (seeding it if empty) and start the hourly collection thread.
@@ -83,6 +87,24 @@ def _stop_weather_agent() -> None:
     """Signal the collection thread to stop and wait for it to finish."""
     if _scheduler:
         _scheduler.stop()
+
+
+def _start_quiz_bot() -> None:
+    """Start the private quiz bot's poll thread, if configured. Idempotent."""
+    global _quiz_bot
+    from . import quiz_bot as qb
+    if _quiz_bot and _quiz_bot.running:
+        return
+    if not qb.is_configured():
+        logger.info("quiz bot not configured (no TELEGRAM_BOT_TOKEN / allow-list) — skipping")
+        return
+    _quiz_bot = qb.QuizBot()
+    _quiz_bot.start()
+
+
+def _stop_quiz_bot() -> None:
+    if _quiz_bot:
+        _quiz_bot.stop()
 
 
 # Lifecycle note: the agent is tied to the **process**, not to an MCP session.
@@ -353,6 +375,23 @@ async def _healthz(_request):
     return JSONResponse({"status": "ok"})
 
 
+async def _quiz_upload(request):
+    """Validate and store an uploaded quiz pool (authenticated by the middleware)."""
+    from starlette.responses import JSONResponse
+
+    from . import quiz
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    errors = quiz.validate_pool(data)
+    if errors:
+        return JSONResponse({"error": "invalid pool", "details": errors[:10]}, status_code=422)
+    quiz.save_pool(data)
+    return JSONResponse({"ok": True, "count": len(data)})
+
+
 def _wrap_lifespan_with_weather_agent(app) -> None:
     """Run the weather agent's start/stop around a Starlette app's own lifespan.
 
@@ -366,10 +405,12 @@ def _wrap_lifespan_with_weather_agent(app) -> None:
     @asynccontextmanager
     async def combined(scope_app):
         _start_weather_agent()
+        _start_quiz_bot()
         try:
             async with inner(scope_app):
                 yield
         finally:
+            _stop_quiz_bot()
             _stop_weather_agent()
 
     app.router.lifespan_context = combined
@@ -396,6 +437,10 @@ def build_app(transport: str):
     from .llm_proxy import chat_completions
     app.add_route("/v1/chat/completions", chat_completions, methods=["POST"])
 
+    # Authenticated upload of the quiz question pool (from the jarvis-cli factory).
+    # Guarded by the X-API-Key middleware like every non-health path.
+    app.add_route("/quiz/pool", _quiz_upload, methods=["POST"])
+
     api_key = os.environ.get("MCP_API_KEY", "").strip()
     if api_key:
         logger.info("API-key auth ENABLED (X-API-Key required)")
@@ -415,9 +460,11 @@ def main() -> None:
         # stdio has no ASGI lifespan, so bracket the run here (one session = the
         # whole process lifetime, so this fires exactly once).
         _start_weather_agent()
+        _start_quiz_bot()
         try:
             mcp.run(transport="stdio")
         finally:
+            _stop_quiz_bot()
             _stop_weather_agent()
         return
 
