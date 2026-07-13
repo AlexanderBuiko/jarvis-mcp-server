@@ -68,11 +68,21 @@ def _call_telegram(token: str, method: str, params: dict, timeout: float = 30) -
         return {}
 
 
+_LETTERS = ("A", "B", "C", "D")
+
+
 def build_keyboard(qindex: int, options: list[str]) -> dict:
-    """Inline keyboard: one button per option; callback data carries q + option index."""
-    return {"inline_keyboard": [
-        [{"text": opt, "callback_data": f"{qindex}:{i}"}] for i, opt in enumerate(options)
-    ]}
+    """Compact letter buttons (A/B/C/D). The full option text lives in the message
+    body, so long answers are never truncated by Telegram's button width."""
+    return {"inline_keyboard": [[
+        {"text": _LETTERS[i], "callback_data": f"{qindex}:{i}"} for i in range(len(options))
+    ]]}
+
+
+def format_question(qindex: int, q: dict) -> str:
+    """Question text with the four options lettered out (A) … B) …)."""
+    opts = "\n".join(f"{_LETTERS[i]}) {opt}" for i, opt in enumerate(q["options"]))
+    return f"Q{qindex + 1}. {q['question']}\n\n{opts}"
 
 
 def format_result(session: dict) -> str:
@@ -81,11 +91,43 @@ def format_result(session: dict) -> str:
     lines = [f"🏁 Result: {session['score']}/{total} correct."]
     if session["wrong"]:
         lines.append("\nReview:")
-        for q, correct in session["wrong"]:
-            lines.append(f"• {q}\n   ✅ {correct}")
+        for w in session["wrong"]:
+            lines.append(f"• {w['question']}\n   ✅ {w['correct']}")
     else:
         lines.append("Perfect round! 🎉")
     return "\n".join(lines)
+
+
+def generate_advice(missed: list[dict]) -> str:
+    """A short, model-generated study tip based on the missed questions.
+
+    This is where the local LLM visibly participates at quiz time. Best-effort: any
+    failure returns "" so the result message is never blocked. Only the missed
+    (generated) questions and their topics are sent to the model — no KB text.
+    """
+    if not missed:
+        return ""
+    from .llm_proxy import _default_model, _forward_to_ollama
+    topics = sorted({w["topic"] for w in missed})
+    qlist = "\n".join(f"- ({w['topic']}) {w['question']}" for w in missed)
+    prompt = (
+        "A user just finished an Android/Kotlin interview practice quiz and missed "
+        f"these questions:\n{qlist}\n\nIn 2-3 short sentences, tell them what to review "
+        f"next time, focusing on the weak topics ({', '.join(topics)}). Be concise and "
+        "encouraging. Do not repeat the questions."
+    )
+    payload = {
+        "model": _default_model(),
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3, "max_tokens": 180,
+    }
+    try:
+        status, body = _forward_to_ollama(payload, timeout=60)
+        if status == 200:
+            return (body["choices"][0]["message"].get("content") or "").strip()
+    except Exception:  # noqa: BLE001 — advice is optional, never break the result
+        return ""
+    return ""
 
 
 class QuizBot:
@@ -165,7 +207,7 @@ class QuizBot:
         s = self._sessions[chat_id]
         i = s["idx"]
         q = s["questions"][i]
-        self._send(chat_id, f"Q{i + 1}. {q['question']}", build_keyboard(i, q["options"]))
+        self._send(chat_id, format_question(i, q), build_keyboard(i, q["options"]))
 
     def _on_answer(self, cb: dict) -> None:
         chat_id = str(cb["message"]["chat"]["id"])
@@ -187,14 +229,22 @@ class QuizBot:
             s["score"] += 1
             self._ack(cb_id, "✅ Correct")
         else:
-            s["wrong"].append((q["question"], q["options"][q["correct_index"]]))
+            s["wrong"].append({
+                "question": q["question"],
+                "correct": q["options"][q["correct_index"]],
+                "topic": q.get("topic", "android"),
+            })
             self._ack(cb_id, "❌ Incorrect")
 
         s["idx"] += 1
         if s["idx"] < len(s["questions"]):
             self._send_question(chat_id)
         else:
-            self._send(chat_id, format_result(s))
+            text = format_result(s)
+            advice = generate_advice(s["wrong"])
+            if advice:
+                text += f"\n\n💡 What to focus on next time:\n{advice}"
+            self._send(chat_id, text)
             self._sessions.pop(chat_id, None)
 
     # ── telegram helpers ──
