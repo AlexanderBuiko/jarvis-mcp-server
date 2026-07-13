@@ -4,7 +4,7 @@ Private Telegram quiz bot.
 A background daemon thread long-polls Telegram (`getUpdates`), and runs a small
 multiple-choice quiz from the uploaded pool:
 
-    /start → a time-seeded round of N questions, each with 4 inline-keyboard
+    /start → a fresh random round of N questions, each with 4 inline-keyboard
     buttons → the bot scores each tap → after the round, a result message
     (score + which ones were missed and their correct answer).
 
