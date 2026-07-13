@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import random
-from datetime import date
 from pathlib import Path
 
 QUESTIONS_PER_ROUND = int(os.environ.get("QUIZ_QUESTIONS_PER_ROUND", "5"))
@@ -69,17 +68,15 @@ def load_pool() -> list:
         return []
 
 
-def _seed_for(seed: int | None) -> int:
-    """A daily seed when none is given, so a round is stable within a calendar day."""
-    if seed is not None:
-        return seed
-    return int(date.today().strftime("%Y%m%d"))
-
-
 def select_questions(pool: list, n: int = QUESTIONS_PER_ROUND, seed: int | None = None) -> list:
-    """Pick up to ``n`` questions deterministically for the given (or daily) seed."""
+    """Pick up to ``n`` questions from the pool.
+
+    ``seed=None`` (the default, used by the bot on each /start) draws a fresh random
+    round every time. An explicit ``seed`` makes selection deterministic — handy for
+    tests and reproducible runs.
+    """
     if not pool:
         return []
-    rng = random.Random(_seed_for(seed))
+    rng = random.Random(seed)
     n = min(n, len(pool))
     return rng.sample(pool, n)

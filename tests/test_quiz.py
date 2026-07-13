@@ -77,7 +77,11 @@ def test_start_sends_intro_and_first_question(tmp_path):
     methods = [m for m, _ in calls]
     assert methods.count("sendMessage") == 2                 # intro + Q1
     q1 = calls[-1][1]
-    assert "reply_markup" in q1 and len(q1["reply_markup"]["inline_keyboard"]) == 4
+    # Four compact letter buttons in one row; options are lettered in the text.
+    kb = q1["reply_markup"]["inline_keyboard"]
+    assert sum(len(row) for row in kb) == 4
+    assert [b["text"] for row in kb for b in row] == ["A", "B", "C", "D"]
+    assert "A) " in q1["text"] and "D) " in q1["text"]
 
 
 def test_non_allowlisted_user_is_ignored(tmp_path):
@@ -105,6 +109,43 @@ def test_full_round_scores_and_reports(tmp_path):
     result = calls[-1][1]["text"]
     assert "3/3" in result
     assert "111" not in bot._sessions                        # session cleared after round
+
+
+def test_missed_round_appends_model_advice(tmp_path):
+    calls = []
+    bot, rec = _bot(tmp_path, calls)
+    with mock.patch.object(quiz_bot, "_call_telegram", side_effect=rec), \
+         mock.patch.object(quiz_bot, "generate_advice", return_value="Review coroutine scopes."):
+        bot.handle_update({"update_id": 1, "message": {
+            "from": {"id": 111}, "chat": {"id": 111}, "text": "/start"}})
+        session = bot._sessions["111"]
+        for i in range(3):
+            wrong = (session["questions"][i]["correct_index"] + 1) % 4  # always wrong
+            bot.handle_update({"update_id": 2 + i, "callback_query": {
+                "id": f"c{i}", "from": {"id": 111},
+                "message": {"chat": {"id": 111}}, "data": f"{i}:{wrong}"}})
+    result = calls[-1][1]["text"]
+    assert "0/3" in result
+    assert "What to focus on next time" in result
+    assert "Review coroutine scopes." in result
+
+
+def test_perfect_round_makes_no_advice_call(tmp_path):
+    # All correct → no missed items → generate_advice returns "" without an LLM call.
+    calls = []
+    bot, rec = _bot(tmp_path, calls)
+    with mock.patch.object(quiz_bot, "_call_telegram", side_effect=rec), \
+         mock.patch("time_server.llm_proxy._forward_to_ollama") as fwd:
+        bot.handle_update({"update_id": 1, "message": {
+            "from": {"id": 111}, "chat": {"id": 111}, "text": "/start"}})
+        s = bot._sessions["111"]
+        for i in range(3):
+            c = s["questions"][i]["correct_index"]
+            bot.handle_update({"update_id": 2 + i, "callback_query": {
+                "id": f"c{i}", "from": {"id": 111},
+                "message": {"chat": {"id": 111}}, "data": f"{i}:{c}"}})
+    fwd.assert_not_called()
+    assert "3/3" in calls[-1][1]["text"]
 
 
 def test_stale_tap_is_ignored_gracefully(tmp_path):
