@@ -16,9 +16,19 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
+# The /help and /review endpoints reuse jarvis-cli's indexing / rag / llm core.
+# Installed from the public GitHub tarball (not git+https) so no `git` binary is
+# needed in the slim base image — keeps the image self-contained and lean.
+RUN pip install "https://github.com/AlexanderBuiko/jarvis-cli/archive/refs/heads/main.tar.gz"
+
 # Copy the application code (changes often → kept after the deps layer).
 COPY time_server ./time_server
 COPY weather_digest ./weather_digest
+
+# Bake the prebuilt, cloud-embedded RAG indexes and point the app at them, so
+# /help and /review can retrieve without a local Ollama (Cloud Run has none).
+COPY indexes ./indexes
+ENV JARVIS_INDEX_DIR=/app/indexes
 
 # The hourly weather scheduler writes its SQLite DB here. The container FS is
 # ephemeral (the DB resets on each new revision and is re-seeded on startup),
