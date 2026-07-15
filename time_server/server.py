@@ -429,6 +429,43 @@ async def _help(request):
     return JSONResponse(result)
 
 
+async def _review(request):
+    """RAG-grounded PR review (authenticated by the middleware).
+
+    Body: ``{"diff": "...", "changed_files": ["..."], "repo": "owner/name"}``.
+    Retrieval + generation run in a threadpool. Returns the structured review; the
+    Action posts it to the PR. jarvis-cli is imported lazily like /help.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse
+
+    try:
+        from . import review_service
+    except ImportError as exc:  # jarvis-cli not installed in this env
+        return JSONResponse(
+            {"error": f"review service unavailable: {exc}. Install jarvis-cli "
+                      "(pip install -e ../jarvis-cli)."},
+            status_code=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    diff = body.get("diff")
+    changed_files = body.get("changed_files") or []
+    repo = body.get("repo")
+    try:
+        result = await run_in_threadpool(review_service.review, diff, changed_files, repo)
+    except review_service.ReviewError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001 — never leak a stacktrace to the client
+        logger.exception("review endpoint failed")
+        return JSONResponse({"error": f"internal error: {exc}"}, status_code=500)
+    return JSONResponse(result)
+
+
 def _wrap_lifespan_with_weather_agent(app) -> None:
     """Run the weather agent's start/stop around a Starlette app's own lifespan.
 
@@ -482,6 +519,11 @@ def build_app(transport: str):
     # grounded, cited answer). The CLI's `/help` command is a thin client of this.
     # Guarded by the X-API-Key middleware like every non-health path.
     app.add_route("/help", _help, methods=["POST"])
+
+    # PR-review "brain": RAG-grounded review of a diff (code + docs indexes →
+    # bugs / architecture / recommendations). The GitHub Action is a thin client;
+    # it holds the GitHub token and posts the returned review. Guarded like above.
+    app.add_route("/review", _review, methods=["POST"])
 
     api_key = os.environ.get("MCP_API_KEY", "").strip()
     if api_key:
