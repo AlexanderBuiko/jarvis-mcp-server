@@ -392,6 +392,43 @@ async def _quiz_upload(request):
     return JSONResponse({"ok": True, "count": len(data)})
 
 
+async def _help(request):
+    """RAG-grounded project Q&A (authenticated by the middleware).
+
+    Body: ``{"question": "...", "branch": "optional-git-branch"}``. Retrieval +
+    generation run in a threadpool (blocking network I/O) so the event loop stays
+    responsive. jarvis-cli is imported lazily so a server without it installed still
+    starts and serves its other routes.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse
+
+    try:
+        from . import help_service
+    except ImportError as exc:  # jarvis-cli not installed in this env
+        return JSONResponse(
+            {"error": f"help service unavailable: {exc}. Install jarvis-cli "
+                      "(pip install -e ../jarvis-cli)."},
+            status_code=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    question = body.get("question")
+    branch = body.get("branch")
+    try:
+        result = await run_in_threadpool(help_service.answer, question, branch)
+    except help_service.HelpError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001 — never leak a stacktrace to the client
+        logger.exception("help endpoint failed")
+        return JSONResponse({"error": f"internal error: {exc}"}, status_code=500)
+    return JSONResponse(result)
+
+
 def _wrap_lifespan_with_weather_agent(app) -> None:
     """Run the weather agent's start/stop around a Starlette app's own lifespan.
 
@@ -440,6 +477,11 @@ def build_app(transport: str):
     # Authenticated upload of the quiz question pool (from the jarvis-cli factory).
     # Guarded by the X-API-Key middleware like every non-health path.
     app.add_route("/quiz/pool", _quiz_upload, methods=["POST"])
+
+    # Project-help "brain": RAG-grounded answers about the project (docs index →
+    # grounded, cited answer). The CLI's `/help` command is a thin client of this.
+    # Guarded by the X-API-Key middleware like every non-health path.
+    app.add_route("/help", _help, methods=["POST"])
 
     api_key = os.environ.get("MCP_API_KEY", "").strip()
     if api_key:
