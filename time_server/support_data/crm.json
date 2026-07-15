@@ -1,0 +1,64 @@
+{
+  "_comment": "Mock CRM for the AI support assistant — a stand-in for a real CRM/helpdesk. Users and their support tickets, jarvis-themed so the FAQ maps to real product setup. Loaded by time_server/crm.py; served over MCP (jarvis.get_ticket / get_user / list_user_tickets) and used by the /support endpoint.",
+  "users": [
+    {
+      "id": "U-1",
+      "name": "Dana Ptak",
+      "email": "dana@example.com",
+      "plan": "pro",
+      "environment": "macOS, jarvis-cli against the Cloud Run MCP server",
+      "signed_up": "2026-05-02"
+    },
+    {
+      "id": "U-2",
+      "name": "Marco Reyes",
+      "email": "marco@example.com",
+      "plan": "free",
+      "environment": "Linux, fully local (Ollama)",
+      "signed_up": "2026-06-18"
+    },
+    {
+      "id": "U-3",
+      "name": "Priya Nair",
+      "email": "priya@example.com",
+      "plan": "pro",
+      "environment": "macOS, local Ollama for embeddings",
+      "signed_up": "2026-06-30"
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1002",
+      "user_id": "U-1",
+      "subject": "Authorization not working",
+      "status": "open",
+      "priority": "high",
+      "product_area": "auth",
+      "created": "2026-07-14",
+      "description": "After you deployed the MCP server to Cloud Run, `mcp list` in the CLI shows '✗ jarvis: unauthorized' and POSTs to the server return HTTP 401. It worked locally before auth was enabled.",
+      "error": "HTTP 401 Unauthorized (X-API-Key)"
+    },
+    {
+      "id": "T-1003",
+      "user_id": "U-2",
+      "subject": "RAG answers say 'I don't know' for everything",
+      "status": "open",
+      "priority": "normal",
+      "product_area": "rag",
+      "created": "2026-07-15",
+      "description": "With `config set rag on` every question comes back as 'I don't know'. Retrieval hit-rate looks like 0%.",
+      "error": "empty retrieval / dimension mismatch?"
+    },
+    {
+      "id": "T-1004",
+      "user_id": "U-3",
+      "subject": "Local model is very slow",
+      "status": "pending",
+      "priority": "low",
+      "product_area": "local-llm",
+      "created": "2026-07-15",
+      "description": "Answers on the local Ollama provider take 30-60s each. Wondering whether to switch to the cloud for interactive use.",
+      "error": null
+    }
+  ]
+}
