@@ -61,6 +61,11 @@ _scheduler: WeatherScheduler | None = None
 # configured (TELEGRAM_BOT_TOKEN + allow-listed user ids).
 _quiz_bot = None
 
+# The support bot (its own poll thread + token), started on startup when configured
+# (SUPPORT_BOT_TOKEN + allow-list). Separate token so it doesn't share getUpdates
+# with the quiz bot.
+_support_bot = None
+
 
 def _start_weather_agent() -> None:
     """Open the DB (seeding it if empty) and start the hourly collection thread.
@@ -105,6 +110,24 @@ def _start_quiz_bot() -> None:
 def _stop_quiz_bot() -> None:
     if _quiz_bot:
         _quiz_bot.stop()
+
+
+def _start_support_bot() -> None:
+    """Start the support bot's poll thread, if configured. Idempotent."""
+    global _support_bot
+    from . import support_bot as sb
+    if _support_bot and _support_bot.running:
+        return
+    if not sb.is_configured():
+        logger.info("support bot not configured (no SUPPORT_BOT_TOKEN / allow-list) — skipping")
+        return
+    _support_bot = sb.SupportBot()
+    _support_bot.start()
+
+
+def _stop_support_bot() -> None:
+    if _support_bot:
+        _support_bot.stop()
 
 
 # Lifecycle note: the agent is tied to the **process**, not to an MCP session.
@@ -368,6 +391,44 @@ def echo(text: str) -> str:
     return text
 
 
+# ── CRM tools (the support assistant's "connect your CRM via MCP") ────────────
+# Backed by a JSON store (time_server/crm.py). Exposed as MCP tools so any client —
+# the JarvisCLI agent, the MCP Inspector — can read ticket/user context; the /support
+# endpoint uses the same crm module server-side.
+
+
+@mcp.tool()
+def get_ticket(ticket_id: str) -> str:
+    """Return a support ticket as JSON: subject, status, priority, product area,
+    description, and error. Returns an ``error`` object if no such ticket exists."""
+    from . import crm
+
+    ticket = crm.get_ticket(ticket_id)
+    if ticket is None:
+        return json.dumps({"error": f"no ticket '{ticket_id}'", "ticket_id": ticket_id})
+    return json.dumps(ticket, indent=2)
+
+
+@mcp.tool()
+def get_user(user_id: str) -> str:
+    """Return a CRM user as JSON: name, email, plan, and environment. Returns an
+    ``error`` object if no such user exists."""
+    from . import crm
+
+    user = crm.get_user(user_id)
+    if user is None:
+        return json.dumps({"error": f"no user '{user_id}'", "user_id": user_id})
+    return json.dumps(user, indent=2)
+
+
+@mcp.tool()
+def list_user_tickets(user_id: str) -> str:
+    """Return all support tickets for a user (newest first) as a JSON list."""
+    from . import crm
+
+    return json.dumps(crm.list_user_tickets(user_id), indent=2)
+
+
 async def _healthz(_request):
     """Unauthenticated liveness probe (Cloud Run / curl)."""
     from starlette.responses import JSONResponse
@@ -466,6 +527,44 @@ async def _review(request):
     return JSONResponse(result)
 
 
+async def _support(request):
+    """RAG-grounded support answer, tailored to a ticket/user (auth by middleware).
+
+    Body: ``{"question": "...", "ticket_id": "T-1002", "user_id": "U-1"}`` (ticket_id
+    and user_id optional). Retrieval + generation run in a threadpool; jarvis-cli is
+    imported lazily like the other brains.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse
+
+    try:
+        from . import support_service
+    except ImportError as exc:  # jarvis-cli not installed in this env
+        return JSONResponse(
+            {"error": f"support service unavailable: {exc}. Install jarvis-cli "
+                      "(pip install -e ../jarvis-cli)."},
+            status_code=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    try:
+        result = await run_in_threadpool(
+            support_service.answer, body.get("question"),
+            body.get("ticket_id"), body.get("user_id"),
+            body.get("style"), body.get("history"),
+        )
+    except support_service.SupportError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001 — never leak a stacktrace to the client
+        logger.exception("support endpoint failed")
+        return JSONResponse({"error": f"internal error: {exc}"}, status_code=500)
+    return JSONResponse(result)
+
+
 def _wrap_lifespan_with_weather_agent(app) -> None:
     """Run the weather agent's start/stop around a Starlette app's own lifespan.
 
@@ -480,10 +579,12 @@ def _wrap_lifespan_with_weather_agent(app) -> None:
     async def combined(scope_app):
         _start_weather_agent()
         _start_quiz_bot()
+        _start_support_bot()
         try:
             async with inner(scope_app):
                 yield
         finally:
+            _stop_support_bot()
             _stop_quiz_bot()
             _stop_weather_agent()
 
@@ -525,6 +626,10 @@ def build_app(transport: str):
     # it holds the GitHub token and posts the returned review. Guarded like above.
     app.add_route("/review", _review, methods=["POST"])
 
+    # Support "brain": RAG-grounded answer over the FAQ, tailored to a user's ticket/
+    # CRM context. The CLI `support` command is a thin client. Guarded like above.
+    app.add_route("/support", _support, methods=["POST"])
+
     api_key = os.environ.get("MCP_API_KEY", "").strip()
     if api_key:
         logger.info("API-key auth ENABLED (X-API-Key required)")
@@ -545,9 +650,11 @@ def main() -> None:
         # whole process lifetime, so this fires exactly once).
         _start_weather_agent()
         _start_quiz_bot()
+        _start_support_bot()
         try:
             mcp.run(transport="stdio")
         finally:
+            _stop_support_bot()
             _stop_quiz_bot()
             _stop_weather_agent()
         return
